@@ -1,0 +1,139 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys, os, argparse, shutil, md5
+
+def DoCopyOrMove(source, target, moveMode):
+    if moveMode:
+        os.rename(source, target)
+        print '{0} -----> {1}'.format(source, target)
+    else:
+        orgStat = os.stat(source)
+        shutil.copyfile(source, target)
+        os.utime(target, (orgStat.st_ctime, orgStat.st_mtime))
+        print '{0} +++++> {1}'.format(source, target)
+
+def GetFullHash(fileName):
+    with open(fileName, 'rb') as f:
+        return md5.new(f.read()).hexdigest()
+
+def GetParticalHash(fileName, fileSize):
+    blockSize = 50*1024
+    blockOffsets = [0, (fileSize - blockSize)/3, 2*(fileSize - blockSize)/3, fileSize - blockSize]
+
+    md5Hash = md5.new()
+    with open(fileName, 'rb') as f:
+        for offset in blockOffsets:
+            f.seek(offset)
+            md5Hash.update(f.read(blockSize))
+
+    return md5Hash.hexdigest()
+
+def HasSameContent(source, target, fullHashMode):
+    srcSize = os.path.getsize(source)
+    dstSize = os.path.getsize(target)
+
+    if srcSize!=dstSize:
+        return False
+    
+    srcMD5 = ''
+    dstMD5 = ''
+    if (not fullHashMode) and srcSize>500*1024:
+        srcMD5 = GetParticalHash(source, srcSize)
+        dstMD5 = GetParticalHash(target, dstSize)
+    else:
+        srcMD5 = GetFullHash(source)
+        dstMD5 = GetFullHash(target)
+    
+    return srcMD5==dstMD5 and len(srcMD5)!=0 and len(dstMD5)!=0
+
+def RenameFile(target, renameIdx):
+    baseName, extName = os.path.splitext(target)
+    newTarget = baseName + '({0})'.format(renameIdx) + extName
+    return newTarget
+
+def CopyFileInternal(source, target, moveMode, fullHashMode):
+    if not os.path.exists(target):
+        DoCopyOrMove(source, target, moveMode)
+        return
+
+    renameIdx = 1
+    newTarget = target
+    while os.path.exists(newTarget) and (not HasSameContent(source, newTarget, fullHashMode)):
+        newTarget = RenameFile(target, renameIdx)
+        renameIdx+=1
+
+    target = newTarget
+
+    if not os.path.exists(target):
+        DoCopyOrMove(source, target, moveMode)
+    else:
+        if moveMode:
+            os.remove(source)
+        print '{0} ====== {1}, skipped'.format(source, target)
+
+def CopyFile(source, target, moveMode, fullHashMode):
+    isDirTarget = False
+
+    if os.path.exists(target) and os.path.isdir(target):
+        isDirTarget = True
+
+    if isDirTarget:
+        CopyFileInternal(source, os.path.join(targetPath, os.path.basename(source)), moveMode, fullHashMode)
+    else:
+        targetPath, _ = os.path.split(target)
+        if len(targetPath)==0:
+            targetPath = './'
+
+        if (not os.path.exists(targetPath)) or (not os.path.isdir(targetPath)):
+            print 'pcopy: error: {0}/: No such file or directory'.format(targetPath)
+            sys.exit(1)
+
+        CopyFileInternal(source, target, moveMode, fullHashMode)
+
+def CopyDirectory(source, target, moveMode, fullHashMode, recursiveMode):
+    if (not os.path.exists(target)) or (not os.path.isdir(target)):
+        print 'pcopy: error: {0}: Invalid target, a directory expected'.format(target)
+        sys.exit(1)
+
+    fileList = os.listdir(source)
+    for fileName in fileList:
+        srcFile = os.path.join(source, fileName)
+        if os.path.isfile(srcFile):
+            CopyFile(srcFile, os.path.join(target, fileName), moveMode, fullHashMode)
+        elif os.path.isdir(srcFile):
+            if not recursiveMode:
+                continue
+            
+            targetFile = os.path.join(target, fileName)
+            if not os.path.exists(targetFile):
+                os.mkdir(targetFile)
+
+            if not os.path.isdir(targetFile):
+                print 'pcopy: error: {0}: File exists'.format(targetFile)
+                sys.exit(1)
+
+            CopyDirectory(srcFile, targetFile, moveMode, fullHashMode, recursiveMode)
+            if moveMode:
+                os.rmdir(srcFile)
+
+if __name__=='__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-m', action='store_true', dest='moveMode', default=False, help='move file(s) from source to target(copy file(s) by default)') 
+    parser.add_argument('-f', action='store_true', dest='fullHashMode', default=False, help='use fullhash mode (more slower than default)') 
+    parser.add_argument('-R', action='store_true', dest='recursiveMode', default=False, help='recursive mode')
+    parser.add_argument('source', action='store', help='source path for photos to be classified')
+    parser.add_argument('target', action='store', help='target path for photos classified')
+    result = parser.parse_args()
+            
+    source = result.source
+    if not os.path.exists(source):
+        print 'pcopy: error: {0}: No such file or directory'.format(source)
+        sys.exit(1)
+
+    target = result.target
+    
+    if os.path.isfile(source):
+        CopyFile(source, target, result.moveMode, result.fullHashMode)
+    elif os.path.isdir(source):
+        CopyDirectory(source, target, result.moveMode, result.fullHashMode, result.recursiveMode)
